@@ -56,17 +56,14 @@ bool decryptage_0(cimg_library::CImg<unsigned char> & photo){
 
 
 int main(){
-    const char* path_photo = "../photo1.jpg";
-    const char* path_photo_cryptee = "../photo1_cryptee.jpg";
+    const char* path_photo = "../photo1.png";                
+    const char* path_photo_cryptee = "../photo1_cryptee.png";
+
     cimg_library::CImg<unsigned char> photo(path_photo);
 
-    // photo.display();
+    photo = encryptage_0(photo);
+
     std::cout << "Décryptage de l'image non cryptée : " << decryptage_0(photo) << std::endl;
-
-    encryptage_0(photo);
-
-    // photo.display();
-    std::cout << "Décryptage de l'image cryptée : " << decryptage_0(photo) << std::endl;
 
     photo.save(path_photo_cryptee, -1, 9);
 
