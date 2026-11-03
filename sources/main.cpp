@@ -58,14 +58,17 @@ bool decryptage_0(cimg_library::CImg<unsigned char> & photo){
 int main(){
     const char* path_photo = "../photo1.png";                
     const char* path_photo_cryptee = "../photo1_cryptee.png";
+    bool encdec = 1; // 0 pour encryption, et 1 pour la décryption.
 
-    cimg_library::CImg<unsigned char> photo(path_photo);
-
-    photo = encryptage_0(photo);
-
-    std::cout << "Décryptage de l'image non cryptée : " << decryptage_0(photo) << std::endl;
-
-    photo.save(path_photo_cryptee, -1, 9);
+    if(!encdec){
+        cimg_library::CImg<unsigned char> photo(path_photo);
+        photo = encryptage_0(photo);
+        photo.save(path_photo_cryptee, -1, 9);
+    }
+    else{
+        cimg_library::CImg<unsigned char> photo_cryptee(path_photo_cryptee);
+        std::cout << "Décryptage de l'image : " << (decryptage_0(photo_cryptee) ? "certifiée" : "non-certifiée") << std::endl;
+    }
 
     return 0;
 }
