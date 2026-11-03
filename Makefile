@@ -6,10 +6,13 @@ CFLAGS= -Wall -Wextra -std=c++20 -fdiagnostics-color=always
 LIBRAIRIES_I1= -I /usr/include/c++/15
 
 # Bibliotèque winmm, pour les sons MP3
-# LIBRAIRIES_l= -lwinmm
+LIBRAIRIES_L= -L/usr/W11R6/lib
+
+# Bibliotèque winmm, pour les sons MP3
+LIBRAIRIES_l= -lX11
 
 # Paramètres de compilation
-LIBRAIRIES= $(LIBRAIRIES_I1)
+LIBRAIRIES= $(LIBRAIRIES_I1) $(LIBRAIRIES_L) $(LIBRAIRIES_l)
 # OBJS= 
 executable= bin/main
 
