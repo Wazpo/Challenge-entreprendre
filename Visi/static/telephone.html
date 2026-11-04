@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Caméra sécurisée</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #0b0f14; color: #e8eef4;
+         display: flex; flex-direction: column; height: 100dvh; }
+  header { padding: 12px 16px; font-size: 14px; color: #9fb0c0; }
+  header b { color: #e8eef4; }
+  #cadre { position: relative; flex: 1; overflow: hidden; background: #000; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  footer { padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #declencheur { width: 76px; height: 76px; border-radius: 50%; border: 5px solid #fff;
+                 background: #e8eef4; cursor: pointer; }
+  #declencheur:active { transform: scale(.92); }
+  #declencheur:disabled { opacity: .4; }
+  #etat { min-height: 3.6em; text-align: center; font-size: 14px; line-height: 1.5; }
+  .ok { color: #4ade80; } .ko { color: #f87171; }
+  code { font-size: 12px; color: #9fb0c0; }
+</style>
+</head>
+<body>
+<header>🔒 Caméra sécurisée — appareil <b id="empreinte">…</b> — <span id="chiffrement">…</span></header>
+<div id="cadre"><video id="video" autoplay playsinline muted></video><div id="flash"></div></div>
+<footer>
+  <button id="declencheur" disabled aria-label="Prendre la photo"></button>
+  <div id="etat">Initialisation…</div>
+</footer>
+
+<script>
+const etat = document.getElementById("etat");
+const bouton = document.getElementById("declencheur");
+const video = document.getElementById("video");
+let cles, empreinte;
+
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+
+// --- Clé de signature, stockée dans le navigateur, clé privée NON EXPORTABLE ---
+function ouvrirBase() {
+  return new Promise((ok, ko) => {
+    const r = indexedDB.open("camera-securisee", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("cles");
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => ko(r.error);
+  });
+}
+async function obtenirCles() {
+  const db = await ouvrirBase();
+  const lire = () => new Promise(ok => {
+    const r = db.transaction("cles").objectStore("cles").get("appareil");
+    r.onsuccess = () => ok(r.result);
+  });
+  let paire = await lire();
+  if (!paire) {
+    // extractable = false : même ce code ne peut pas lire la clé privée, seulement s'en servir
+    paire = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    await new Promise(ok => {
+      const t = db.transaction("cles", "readwrite");
+      t.objectStore("cles").put(paire, "appareil");
+      t.oncomplete = ok;
+    });
+  }
+  return paire;
+}
+
+async function demarrer() {
+  if (!window.isSecureContext || !crypto.subtle) {
+    etat.innerHTML = '<span class="ko">Il faut ouvrir la page en <b>https://</b></span>';
+    return;
+  }
+  moduleCpp = await chargerCpp();
+  const config = await (await fetch("/api/config")).json();
+  if (config.marque_cpp && !moduleCpp) {
+    etat.innerHTML = '<span class="ko">Le PC vérifie la marque C++, mais static/marque.js est absent : lance cpp/compiler_telephone.bat</span>';
+    return;
+  }
+  document.getElementById("chiffrement").textContent = moduleCpp ? "🔐 marque C++ active" : "marque C++ inactive";
+  cles = await obtenirCles();
+  const spki = await crypto.subtle.exportKey("spki", cles.publicKey);
+  const rep = await fetch("/api/appareil", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spki: b64(spki), nom: navigator.userAgent.match(/\(([^;)]+)/)?.[1] || "Téléphone" })
+  });
+  empreinte = (await rep.json()).empreinte;
+  document.getElementById("empreinte").textContent = empreinte;
+
+  const flux = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false
+  });
+  video.srcObject = flux;
+  await video.play();
+  bouton.disabled = false;
+  etat.textContent = "Prêt. Appuie pour prendre une photo.";
+}
+
+// --- Prise + signature, dans la même fonction, sans jamais enregistrer l'image ---
+bouton.onclick = async () => {
+  bouton.disabled = true;
+  const t0 = performance.now();
+
+  // 1. Image capturée directement depuis le capteur
+  const canvas = document.createElement("canvas");
+  const echelle = Math.min(1, 1280 / video.videoWidth);
+  canvas.width = Math.round(video.videoWidth * echelle);
+  canvas.height = Math.round(video.videoHeight * echelle);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const horodatage = new Date().toISOString();
+
+  // 2. TON ALGORITHME C++ : encryptage_0 appliqué aux pixels (voir marquer() plus bas)
+  const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  marquer(pixels);
+  ctx.putImageData(pixels, 0, 0);
+
+  // 3. Encodage PNG (sans perte) en mémoire
+  const blob = await new Promise(ok => canvas.toBlob(ok, "image/png"));
+  const octets = await blob.arrayBuffer();
+
+  // 4. Empreinte SHA-256 + signature ECDSA
+  const empreintePhoto = hex(await crypto.subtle.digest("SHA-256", octets));
+  const message = new TextEncoder().encode(`${empreintePhoto}|${horodatage}|${empreinte}`);
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, cles.privateKey, message);
+  const duree = Math.round(performance.now() - t0);
+
+  const flash = document.getElementById("flash");
+  flash.style.opacity = .8; setTimeout(() => flash.style.opacity = 0, 120);
+  etat.innerHTML = `✍️ Signée en <b>${duree} ms</b> après la prise<br><code>${empreintePhoto.slice(0, 24)}…</code><br>Envoi…`;
+
+  // 5. Envoi de la photo marquée et signée au PC
+  const form = new FormData();
+  form.append("photo", blob, "photo.png");
+  form.append("signature", b64(signature));
+  form.append("horodatage", horodatage);
+  form.append("appareil", empreinte);
+  form.append("empreinte", empreintePhoto);
+  form.append("duree_ms", duree);
+  try {
+    const r = await (await fetch("/api/photo", { method: "POST", body: form })).json();
+    etat.innerHTML = `✍️ Signée en <b>${duree} ms</b> après la prise<br><code>${empreintePhoto.slice(0, 24)}…</code><br>` +
+      (r.authentique ? '<span class="ok">✅ Reçue et vérifiée par le PC</span>' : `<span class="ko">❌ ${r.raison}</span>`);
+  } catch (e) {
+    etat.innerHTML = `<span class="ko">Échec de l'envoi : ${e.message}</span>`;
+  }
+  bouton.disabled = false;
+};
+
+// ======================================================================
+//  TON ALGORITHME C++ (cpp/encryptage.h) compilé en WebAssembly
+// ======================================================================
+//  cpp/compiler_telephone.bat produit static/marque.js + static/marque.wasm.
+//  S'ils sont présents, ils sont chargés automatiquement.
+let moduleCpp = null;
+
+function chargerCpp() {
+  return new Promise(ok => {
+    const s = document.createElement("script");
+    s.src = "/static/marque.js";
+    s.onload = async () => ok(await ModuleMarque());
+    s.onerror = () => ok(null);           // fichier absent : pas de marque
+    document.head.appendChild(s);
+  });
+}
+
+// Copie les pixels dans la mémoire du C++, appelle marquer() (cpp/pont.cpp,
+// qui appelle ton encryptage_0), puis recopie le résultat dans l'image.
+function marquer(imageData) {
+  if (!moduleCpp) return;
+  const px = imageData.data, n = px.length;
+  const ptr = moduleCpp._malloc(n);
+  moduleCpp.HEAPU8.set(px, ptr);
+  moduleCpp._marquer(ptr, imageData.width, imageData.height);
+  px.set(moduleCpp.HEAPU8.subarray(ptr, ptr + n));
+  moduleCpp._free(ptr);
+}
+// ======================================================================
+
+demarrer().catch(e => etat.innerHTML = `<span class="ko">Erreur : ${e.message}</span>`);
+</script>
+</body>
+</html>

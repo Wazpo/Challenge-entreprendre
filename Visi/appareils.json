@@ -1,0 +1,17 @@
+{
+  "A2BD 2B08 2F94 8248": {
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEq1PlqF/yijOKhWxut9VV1n+VSWACkBQCtA+TLxSy6UR3ioj5VixCoMWpFT1xroF8W7CL8t4S9mJkTc+x33n3OQ==",
+    "nom": "iPhone",
+    "enregistre_le": "2026-11-04T18:05:25"
+  },
+  "622C D016 FD17 70A9": {
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEftItfq+sS3a24QbYrW1frxySjJxHj0MT5M4AfG6pm0nA2xGyho3y8yGCJ2v0HhcnxoxtIcITrFQgmjD5/GhLaQ==",
+    "nom": "Windows NT 10.0",
+    "enregistre_le": "2026-11-04T18:37:53"
+  },
+  "BD08 ECC2 395A 547A": {
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVr8zQnYESCqLbjV0EPgIGUXMCqnojiYWfZh+JiI3YoFdJ3UpRtKo5LIBmCAIF0i8hwnFBRFe5UD+ETRqoyJu2w==",
+    "nom": "Windows NT 10.0",
+    "enregistre_le": "2026-11-04T18:38:25"
+  }
+}

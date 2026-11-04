@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Vérification des photos</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f4f6f8; color: #1a2330; }
+  header { padding: 20px 32px; background: #1a2330; color: #fff; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: #9fb0c0; font-size: 14px; }
+  main { padding: 24px 32px; display: grid; gap: 20px; }
+  .vide { color: #6b7a8a; text-align: center; padding: 60px; font-size: 18px; }
+  .carte { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px #0001; display: grid;
+           grid-template-columns: 320px 1fr; overflow: hidden; border-left: 8px solid #ccc; }
+  .carte.ok { border-left-color: #16a34a; } .carte.ko { border-left-color: #dc2626; }
+  .carte img { width: 100%; height: 100%; object-fit: cover; background: #000; display: block; }
+  .infos { padding: 18px 22px; }
+  .statut { font-size: 24px; font-weight: 700; margin: 0 0 4px; }
+  .ok .statut { color: #16a34a; } .ko .statut { color: #dc2626; }
+  .raison { margin: 0 0 14px; color: #44515f; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 14px; font-size: 14px; }
+  dt { color: #6b7a8a; } dd { margin: 0; }
+  .hash { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; word-break: break-all; }
+  .diff { background: #fecaca; color: #991b1b; }
+  button { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; border: 1px solid #c8d1da;
+           background: #fff; cursor: pointer; margin-right: 8px; }
+  button.danger { background: #dc2626; color: #fff; border-color: #dc2626; }
+  button:hover { filter: brightness(.95); }
+  .fichier { font-size: 12px; color: #6b7a8a; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🔍 Vérification des photos signées</h1>
+    <p>Chaque photo est signée par le téléphone au moment de la prise. Toute modification ultérieure est détectée.</p>
+  </div>
+  <button onclick="toutEffacer()">Tout effacer</button>
+</header>
+<main id="liste"><div class="vide">En attente d'une photo depuis le téléphone…</div></main>
+
+<script>
+const liste = document.getElementById("liste");
+let dernierEtat = "";
+
+function surligner(attendu, actuel) {
+  // Met en rouge les caractères de l'empreinte actuelle qui diffèrent de l'empreinte signée
+  return [...actuel].map((c, i) => c === attendu[i] ? c : `<span class="diff">${c}</span>`).join("");
+}
+
+function carte(p) {
+  const ok = p.authentique;
+  return `
+  <section class="carte ${ok ? "ok" : "ko"}">
+    <img src="/photos/${p.id}.png?v=${p.empreinte_actuelle}" alt="">
+    <div class="infos">
+      <p class="statut">${ok ? "✅ Photo authentique" : "❌ Photo altérée"}</p>
+      <p class="raison">${p.raison}</p>
+      <dl>
+        <dt>Prise le</dt><dd>${new Date(p.horodatage).toLocaleString("fr-FR")}</dd>
+        <dt>Signée</dt><dd>${p.duree_ms} ms après la prise</dd>
+        <dt>Appareil</dt><dd>${p.appareil}</dd>
+        <dt>Marque C++</dt><dd>${p.marque_cpp === null ? "non vérifiée (pas de marque.dll)"
+          : p.marque_cpp ? "✅ certifiée (decryptage_0)" : "❌ non certifiée (decryptage_0)"}</dd>
+        <dt>Empreinte signée</dt><dd class="hash">${p.empreinte_signee}</dd>
+        <dt>Empreinte actuelle</dt><dd class="hash">${surligner(p.empreinte_signee, p.empreinte_actuelle)}</dd>
+      </dl>
+      <button class="danger" onclick="alterer('${p.id}')">Modifier 1 pixel</button>
+      <button onclick="restaurer('${p.id}')">Restaurer l'original</button>
+      <div class="fichier">Fichier : ${p.fichier} — tu peux aussi l'ouvrir dans Paint, le modifier et l'enregistrer.</div>
+    </div>
+  </section>`;
+}
+
+async function rafraichir() {
+  try {
+    const photos = await (await fetch("/api/photos")).json();
+    const signature = JSON.stringify(photos.map(p => [p.id, p.empreinte_actuelle, p.authentique, p.marque_cpp]));
+    if (signature === dernierEtat) return;
+    dernierEtat = signature;
+    liste.innerHTML = photos.length ? photos.map(carte).join("")
+      : '<div class="vide">En attente d\'une photo depuis le téléphone…</div>';
+  } catch (e) { /* serveur momentanément indisponible */ }
+}
+
+async function alterer(id) {
+  const r = await (await fetch(`/api/photos/${id}/alterer`, { method: "POST" })).json();
+  console.log("Pixel modifié", r);
+  rafraichir();
+}
+async function restaurer(id) { await fetch(`/api/photos/${id}/restaurer`, { method: "POST" }); rafraichir(); }
+async function toutEffacer() {
+  if (confirm("Effacer toutes les photos ?")) { await fetch("/api/photos", { method: "DELETE" }); rafraichir(); }
+}
+
+rafraichir();
+setInterval(rafraichir, 1000);
+</script>
+</body>
+</html>
