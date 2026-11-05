@@ -8,8 +8,15 @@
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, sans-serif; background: #0b0f14; color: #e8eef4;
          display: flex; flex-direction: column; height: 100dvh; }
-  header { padding: 12px 16px; font-size: 14px; color: #9fb0c0; }
+  header { padding: 10px 16px; font-size: 13px; color: #9fb0c0; }
   header b { color: #e8eef4; }
+  nav { display: flex; gap: 8px; padding: 0 16px 10px; }
+  nav button { flex: 1; font: inherit; font-size: 15px; padding: 10px; border-radius: 10px; border: 1px solid #2a3542;
+               background: #141b23; color: #9fb0c0; }
+  nav button.actif { background: #e8eef4; color: #0b0f14; border-color: #e8eef4; font-weight: 600; }
+  .onglet { flex: 1; display: none; flex-direction: column; min-height: 0; }
+  .onglet.actif { display: flex; }
+
   #cadre { position: relative; flex: 1; overflow: hidden; background: #000; }
   video { width: 100%; height: 100%; object-fit: cover; }
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity .25s; }
@@ -19,86 +26,181 @@
   #declencheur:active { transform: scale(.92); }
   #declencheur:disabled { opacity: .4; }
   #etat { min-height: 3.6em; text-align: center; font-size: 14px; line-height: 1.5; }
-  .ok { color: #4ade80; } .ko { color: #f87171; }
+
+  #verif { overflow-y: auto; padding: 0 16px 24px; }
+  .choisir { display: block; text-align: center; padding: 12px; border-radius: 10px; border: 1px dashed #4a5a6a;
+             color: #e8eef4; margin-bottom: 16px; cursor: pointer; }
+  .choisir input { display: none; }
+  .vide { color: #6b7a8a; text-align: center; padding: 40px 0; }
+  .carte { background: #141b23; border-radius: 12px; overflow: hidden; margin-bottom: 14px; border-left: 6px solid #4a5a6a; }
+  .carte.ok { border-left-color: #22c55e; } .carte.ko { border-left-color: #ef4444; }
+  .carte img { width: 100%; max-height: 240px; object-fit: cover; display: block; background: #000; }
+  .infos { padding: 12px 14px; font-size: 13px; line-height: 1.5; }
+  .statut { font-size: 18px; font-weight: 700; margin: 0 0 2px; }
+  .ok .statut { color: #4ade80; } .ko .statut { color: #f87171; }
+  .raison { margin: 0 0 8px; color: #c2ceda; }
+  .hash { font-family: ui-monospace, Consolas, monospace; font-size: 11px; word-break: break-all; color: #9fb0c0; }
+  .diff { background: #7f1d1d; color: #fecaca; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .actions button, .actions a { font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid #2a3542;
+                                background: #1d2631; color: #e8eef4; text-decoration: none; }
+  .ok-txt { color: #4ade80; } .ko-txt { color: #f87171; }
   code { font-size: 12px; color: #9fb0c0; }
 </style>
 </head>
 <body>
-<header>🔒 Caméra sécurisée — appareil <b id="empreinte">…</b> — <span id="chiffrement">…</span></header>
-<div id="cadre"><video id="video" autoplay playsinline muted></video><div id="flash"></div></div>
-<footer>
-  <button id="declencheur" disabled aria-label="Prendre la photo"></button>
-  <div id="etat">Initialisation…</div>
-</footer>
+<header>🔒 Caméra sécurisée : appareil <b id="appareil">…</b>, <span id="chiffrement">…</span></header>
+<nav>
+  <button id="btn-photo" class="actif">📷 Photo</button>
+  <button id="btn-verif">🔍 Vérifier</button>
+</nav>
+
+<section id="onglet-photo" class="onglet actif">
+  <div id="cadre"><video id="video" autoplay playsinline muted></video><div id="flash"></div></div>
+  <footer>
+    <button id="declencheur" disabled aria-label="Prendre la photo"></button>
+    <div id="etat">Initialisation…</div>
+  </footer>
+</section>
+
+<section id="onglet-verif" class="onglet">
+  <div id="verif">
+    <label class="choisir">📂 Vérifier un fichier PNG…<input type="file" id="fichier" accept="image/png,.png"></label>
+    <div id="resultat-fichier"></div>
+    <div id="galerie"></div>
+  </div>
+</section>
 
 <script>
-const etat = document.getElementById("etat");
-const bouton = document.getElementById("declencheur");
-const video = document.getElementById("video");
-let cles, empreinte;
+// ======================================================================
+//  Tout se passe sur le téléphone : la clé, la signature, les photos et
+//  la vérification. Rien n'est envoyé nulle part.
+// ======================================================================
+const $ = id => document.getElementById(id);
+const etat = $("etat"), bouton = $("declencheur"), video = $("video");
+let db, appareil, moduleCpp = null;
 
 const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const deb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+const texte = s => new TextEncoder().encode(s);
 
-// --- Clé de signature, stockée dans le navigateur, clé privée NON EXPORTABLE ---
+// ---------- Stockage local (IndexedDB) ----------
 function ouvrirBase() {
   return new Promise((ok, ko) => {
-    const r = indexedDB.open("camera-securisee", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("cles");
+    const r = indexedDB.open("camera-securisee", 2);
+    r.onupgradeneeded = () => {
+      if (!r.result.objectStoreNames.contains("cles")) r.result.createObjectStore("cles");
+      if (!r.result.objectStoreNames.contains("photos")) r.result.createObjectStore("photos", { keyPath: "id" });
+    };
     r.onsuccess = () => ok(r.result);
     r.onerror = () => ko(r.error);
   });
 }
-async function obtenirCles() {
-  const db = await ouvrirBase();
-  const lire = () => new Promise(ok => {
-    const r = db.transaction("cles").objectStore("cles").get("appareil");
-    r.onsuccess = () => ok(r.result);
+function requete(magasin, mode, action) {
+  return new Promise((ok, ko) => {
+    const t = db.transaction(magasin, mode);
+    const r = action(t.objectStore(magasin));
+    t.oncomplete = () => ok(r.result);
+    t.onerror = () => ko(t.error);
   });
-  let paire = await lire();
-  if (!paire) {
-    // extractable = false : même ce code ne peut pas lire la clé privée, seulement s'en servir
-    paire = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-    await new Promise(ok => {
-      const t = db.transaction("cles", "readwrite");
-      t.objectStore("cles").put(paire, "appareil");
-      t.oncomplete = ok;
-    });
-  }
-  return paire;
 }
 
-async function demarrer() {
-  if (!window.isSecureContext || !crypto.subtle) {
-    etat.innerHTML = '<span class="ko">Il faut ouvrir la page en <b>https://</b></span>';
-    return;
+// ---------- Clé secrète de l'appareil ----------
+// Une seule clé (HMAC-SHA256) sert à signer ET à vérifier. Elle est NON EXPORTABLE :
+// même ce code ne peut pas la lire, seulement s'en servir. Elle ne quitte jamais le téléphone.
+async function obtenirCle() {
+  let c = await requete("cles", "readonly", s => s.get("hmac"));
+  if (!c) {
+    c = {
+      cle: await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]),
+      // Identifiant au hasard, juste pour reconnaître les photos de cet appareil
+      id: hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase().match(/.{4}/g).join(" "),
+    };
+    await requete("cles", "readwrite", s => s.put(c, "hmac"));
   }
-  moduleCpp = await chargerCpp();
-  const config = await (await fetch("/api/config")).json();
-  if (config.marque_cpp && !moduleCpp) {
-    etat.innerHTML = '<span class="ko">Le PC vérifie la marque C++, mais static/marque.js est absent : lance cpp/compiler_telephone.bat</span>';
-    return;
-  }
-  document.getElementById("chiffrement").textContent = moduleCpp ? "🔐 marque C++ active" : "marque C++ inactive";
-  cles = await obtenirCles();
-  const spki = await crypto.subtle.exportKey("spki", cles.publicKey);
-  const rep = await fetch("/api/appareil", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ spki: b64(spki), nom: navigator.userAgent.match(/\(([^;)]+)/)?.[1] || "Téléphone" })
-  });
-  empreinte = (await rep.json()).empreinte;
-  document.getElementById("empreinte").textContent = empreinte;
+  return c;
+}
+const messageSigne = (empreinte, horodatage, id) => texte(`${empreinte}|${horodatage}|${id}`);
 
-  const flux = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false
-  });
-  video.srcObject = flux;
-  await video.play();
-  bouton.disabled = false;
-  etat.textContent = "Prêt. Appuie pour prendre une photo.";
+// ---------- Certificat rangé DANS le fichier PNG ----------
+// Un PNG est une suite de blocs. On ajoute un bloc texte « visi-certificat »
+// qui contient la signature. L'empreinte est calculée sur le PNG SANS ce bloc.
+const MOT_CLE = "visi-certificat";
+const TABLE_CRC = Uint32Array.from({ length: 256 }, (_, n) => {
+  for (let k = 0; k < 8; k++) n = n & 1 ? 0xEDB88320 ^ (n >>> 1) : n >>> 1;
+  return n >>> 0;
+});
+function crc32(octets) {
+  let c = 0xFFFFFFFF;
+  for (const b of octets) c = TABLE_CRC[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function assembler(...morceaux) {
+  const r = new Uint8Array(morceaux.reduce((n, m) => n + m.length, 0));
+  let p = 0;
+  for (const m of morceaux) { r.set(m, p); p += m.length; }
+  return r;
+}
+const estPng = o => o.length > 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => o[i] === b);
+function blocs(png) {
+  const v = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  const liste = [];
+  for (let p = 8; p + 12 <= png.length;) {
+    const n = v.getUint32(p);
+    const type = String.fromCharCode(...png.subarray(p + 4, p + 8));
+    liste.push({ debut: p, fin: p + 12 + n, type, donnees: png.subarray(p + 8, p + 8 + n) });
+    p += 12 + n;
+    if (type === "IEND") break;
+  }
+  return liste;
+}
+function ajouterCertificat(png, certificat) {
+  const donnees = texte(MOT_CLE + "\0" + JSON.stringify(certificat));
+  const bloc = new Uint8Array(12 + donnees.length);
+  const v = new DataView(bloc.buffer);
+  v.setUint32(0, donnees.length);
+  bloc.set(texte("tEXt"), 4);
+  bloc.set(donnees, 8);
+  v.setUint32(8 + donnees.length, crc32(bloc.subarray(4, 8 + donnees.length)));
+  const apresEntete = blocs(png)[0].fin;   // juste après le bloc IHDR
+  return assembler(png.subarray(0, apresEntete), bloc, png.subarray(apresEntete));
+}
+function separerCertificat(png) {
+  let certificat = null;
+  const morceaux = [png.subarray(0, 8)];
+  for (const b of blocs(png)) {
+    if (b.type === "tEXt") {
+      const t = new TextDecoder().decode(b.donnees);
+      if (t.startsWith(MOT_CLE + "\0")) {
+        try { certificat = JSON.parse(t.slice(MOT_CLE.length + 1)); } catch { }
+        continue;
+      }
+    }
+    morceaux.push(png.subarray(b.debut, b.fin));
+  }
+  return { sansCertificat: assembler(...morceaux), certificat };
 }
 
-// --- Prise + signature, dans la même fonction, sans jamais enregistrer l'image ---
+// ---------- Vérification (sur le téléphone) ----------
+async function verifierPhoto(octets) {
+  octets = new Uint8Array(octets);
+  if (!estPng(octets))
+    return { ok: false, raison: "Ce n'est pas un PNG : la photo a été convertie (par exemple en JPEG par une messagerie)" };
+  const { sansCertificat, certificat } = separerCertificat(octets);
+  if (!certificat) return { ok: false, raison: "Aucun certificat dans ce fichier : photo non certifiée" };
+  const r = { certificat, empreinte: hex(await crypto.subtle.digest("SHA-256", sansCertificat)) };
+  if (certificat.appareil !== appareil.id)
+    return { ...r, ok: false, raison: `Certifiée par un autre appareil (${certificat.appareil}) : seul cet appareil peut la vérifier` };
+  r.ok = await crypto.subtle.verify("HMAC", appareil.cle, deb64(certificat.signature),
+    messageSigne(r.empreinte, certificat.horodatage, certificat.appareil));
+  r.raison = r.ok ? "Signature valide : la photo est identique à celle prise par l'appareil"
+                  : "Signature invalide : la photo a été modifiée après la prise";
+  r.marque = await verifierMarque(octets);
+  return r;
+}
+
+// ---------- Prise + signature, sans jamais enregistrer l'image avant ----------
 bouton.onclick = async () => {
   bouton.disabled = true;
   const t0 = performance.now();
@@ -112,50 +214,125 @@ bouton.onclick = async () => {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const horodatage = new Date().toISOString();
 
-  // 2. TON ALGORITHME C++ : encryptage_0 appliqué aux pixels (voir marquer() plus bas)
+  // 2. TON ALGORITHME C++ : encryptage_0 appliqué aux pixels
   const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
   marquer(pixels);
   ctx.putImageData(pixels, 0, 0);
 
   // 3. Encodage PNG (sans perte) en mémoire
-  const blob = await new Promise(ok => canvas.toBlob(ok, "image/png"));
-  const octets = await blob.arrayBuffer();
+  const png = new Uint8Array(await (await new Promise(ok => canvas.toBlob(ok, "image/png"))).arrayBuffer());
 
-  // 4. Empreinte SHA-256 + signature ECDSA
-  const empreintePhoto = hex(await crypto.subtle.digest("SHA-256", octets));
-  const message = new TextEncoder().encode(`${empreintePhoto}|${horodatage}|${empreinte}`);
-  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, cles.privateKey, message);
+  // 4. Empreinte SHA-256 + signature, puis certificat glissé dans le fichier
+  const empreinte = hex(await crypto.subtle.digest("SHA-256", png));
+  const signature = await crypto.subtle.sign("HMAC", appareil.cle, messageSigne(empreinte, horodatage, appareil.id));
+  const certifiee = ajouterCertificat(png, {
+    version: 1, appareil: appareil.id, horodatage, empreinte, signature: b64(signature), marque_cpp: !!moduleCpp,
+  });
   const duree = Math.round(performance.now() - t0);
 
-  const flash = document.getElementById("flash");
+  const flash = $("flash");
   flash.style.opacity = .8; setTimeout(() => flash.style.opacity = 0, 120);
-  etat.innerHTML = `✍️ Signée en <b>${duree} ms</b> après la prise<br><code>${empreintePhoto.slice(0, 24)}…</code><br>Envoi…`;
 
-  // 5. Envoi de la photo marquée et signée au PC
-  const form = new FormData();
-  form.append("photo", blob, "photo.png");
-  form.append("signature", b64(signature));
-  form.append("horodatage", horodatage);
-  form.append("appareil", empreinte);
-  form.append("empreinte", empreintePhoto);
-  form.append("duree_ms", duree);
-  try {
-    const r = await (await fetch("/api/photo", { method: "POST", body: form })).json();
-    etat.innerHTML = `✍️ Signée en <b>${duree} ms</b> après la prise<br><code>${empreintePhoto.slice(0, 24)}…</code><br>` +
-      (r.authentique ? '<span class="ok">✅ Reçue et vérifiée par le PC</span>' : `<span class="ko">❌ ${r.raison}</span>`);
-  } catch (e) {
-    etat.innerHTML = `<span class="ko">Échec de l'envoi : ${e.message}</span>`;
-  }
+  // 5. Rangée dans la mémoire du téléphone (rien n'est envoyé)
+  const id = horodatage.replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  await requete("photos", "readwrite", s => s.put({ id, horodatage, octets: certifiee.buffer, original: certifiee.buffer }));
+  etat.innerHTML = `✍️ Signée en <b>${duree} ms</b> après la prise<br><code>${empreinte.slice(0, 24)}…</code><br>` +
+    `<span class="ok-txt">✅ Enregistrée sur le téléphone (onglet Vérifier)</span>`;
   bouton.disabled = false;
 };
+
+// ---------- Onglet Vérifier ----------
+let urls = [];
+const surligner = (attendu, actuel) =>
+  [...actuel].map((c, i) => c === attendu[i] ? c : `<span class="diff">${c}</span>`).join("");
+
+function carte(v, url, actions = "") {
+  const c = v.certificat;
+  const marque = v.marque === undefined || v.marque === null ? ""
+    : `<div>Marque C++ : ${v.marque ? '<span class="ok-txt">✅ intacte</span>' : '<span class="ko-txt">❌ absente ou cassée</span>'}</div>`;
+  return `
+  <div class="carte ${v.ok ? "ok" : "ko"}">
+    <img src="${url}" alt="">
+    <div class="infos">
+      <p class="statut">${v.ok ? "✅ Photo certifiée" : "❌ Photo non certifiée"}</p>
+      <p class="raison">${v.raison}</p>
+      ${c ? `<div>Prise le ${new Date(c.horodatage).toLocaleString("fr-FR")}</div>` : ""}
+      ${marque}
+      ${v.empreinte ? `<div class="hash">Signée : ${c.empreinte}<br>Actuelle : ${surligner(c.empreinte, v.empreinte)}</div>` : ""}
+      ${actions}
+    </div>
+  </div>`;
+}
+
+async function afficherGalerie() {
+  urls.forEach(URL.revokeObjectURL);
+  urls = [];
+  const photos = (await requete("photos", "readonly", s => s.getAll())).reverse();
+  if (!photos.length) { $("galerie").innerHTML = '<div class="vide">Aucune photo pour l\'instant.</div>'; return; }
+  let html = "";
+  for (const p of photos) {
+    const url = URL.createObjectURL(new Blob([p.octets], { type: "image/png" }));
+    urls.push(url);
+    html += carte(await verifierPhoto(p.octets), url, `
+      <div class="actions">
+        <a href="${url}" download="visi-${p.id}.png">💾 Enregistrer</a>
+        <button onclick="modifierPixel('${p.id}')">Modifier 1 pixel</button>
+        <button onclick="restaurer('${p.id}')">Restaurer</button>
+        <button onclick="supprimer('${p.id}')">🗑️</button>
+      </div>`);
+  }
+  $("galerie").innerHTML = html;
+}
+
+$("fichier").onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  $("resultat-fichier").innerHTML = carte(await verifierPhoto(await f.arrayBuffer()), url);
+  e.target.value = "";
+};
+
+// Démo : change UN pixel (rouge +1 ou -1, invisible à l'œil) en gardant le certificat d'origine
+async function modifierPixel(id) {
+  const p = await requete("photos", "readonly", s => s.get(id));
+  const { certificat } = separerCertificat(new Uint8Array(p.octets));
+  const { canvas, ctx } = await decoder(p.octets);
+  const x = Math.floor(Math.random() * canvas.width), y = Math.floor(Math.random() * canvas.height);
+  const px = ctx.getImageData(x, y, 1, 1);
+  px.data[0] = px.data[0] < 255 ? px.data[0] + 1 : px.data[0] - 1;
+  ctx.putImageData(px, x, y);
+  const png = new Uint8Array(await (await new Promise(ok => canvas.toBlob(ok, "image/png"))).arrayBuffer());
+  p.octets = (certificat ? ajouterCertificat(png, certificat) : png).buffer;
+  await requete("photos", "readwrite", s => s.put(p));
+  afficherGalerie();
+}
+async function restaurer(id) {
+  const p = await requete("photos", "readonly", s => s.get(id));
+  p.octets = p.original;
+  await requete("photos", "readwrite", s => s.put(p));
+  afficherGalerie();
+}
+async function supprimer(id) {
+  if (!confirm("Supprimer cette photo ?")) return;
+  await requete("photos", "readwrite", s => s.delete(id));
+  afficherGalerie();
+}
+
+function changerOnglet(nom) {
+  for (const n of ["photo", "verif"]) {
+    $("btn-" + n).classList.toggle("actif", n === nom);
+    $("onglet-" + n).classList.toggle("actif", n === nom);
+  }
+  if (nom === "verif") afficherGalerie();
+}
+$("btn-photo").onclick = () => changerOnglet("photo");
+$("btn-verif").onclick = () => changerOnglet("verif");
 
 // ======================================================================
 //  TON ALGORITHME C++ (cpp/encryptage.h) compilé en WebAssembly
 // ======================================================================
 //  cpp/compiler_telephone.bat produit static/marque.js + static/marque.wasm.
 //  S'ils sont présents, ils sont chargés automatiquement.
-let moduleCpp = null;
-
 function chargerCpp() {
   return new Promise(ok => {
     const s = document.createElement("script");
@@ -166,20 +343,58 @@ function chargerCpp() {
   });
 }
 
-// Copie les pixels dans la mémoire du C++, appelle marquer() (cpp/pont.cpp,
-// qui appelle ton encryptage_0), puis recopie le résultat dans l'image.
-function marquer(imageData) {
-  if (!moduleCpp) return;
+// Copie les pixels dans la mémoire du C++, appelle une fonction de cpp/pont.cpp, recopie le résultat.
+function appelerCpp(fonction, imageData) {
   const px = imageData.data, n = px.length;
   const ptr = moduleCpp._malloc(n);
   moduleCpp.HEAPU8.set(px, ptr);
-  moduleCpp._marquer(ptr, imageData.width, imageData.height);
+  const r = fonction(ptr, imageData.width, imageData.height);
   px.set(moduleCpp.HEAPU8.subarray(ptr, ptr + n));
   moduleCpp._free(ptr);
+  return r;
+}
+function marquer(imageData) {               // encryptage_0
+  if (moduleCpp) appelerCpp(moduleCpp._marquer, imageData);
+}
+async function verifierMarque(octets) {     // decryptage_0 : true / false, ou null si indisponible
+  if (!moduleCpp?._verifier_marque) return null;
+  const { canvas, ctx } = await decoder(octets);
+  return appelerCpp(moduleCpp._verifier_marque, ctx.getImageData(0, 0, canvas.width, canvas.height)) === 1;
 }
 // ======================================================================
 
-demarrer().catch(e => etat.innerHTML = `<span class="ko">Erreur : ${e.message}</span>`);
+// Décode un PNG en pixels exacts (sans correction de couleur)
+async function decoder(octets) {
+  const image = await createImageBitmap(new Blob([octets], { type: "image/png" }),
+    { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width; canvas.height = image.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  return { canvas, ctx };
+}
+
+async function demarrer() {
+  if (!window.isSecureContext || !crypto.subtle) {
+    etat.innerHTML = '<span class="ko-txt">Il faut ouvrir la page en <b>https://</b></span>';
+    return;
+  }
+  db = await ouvrirBase();
+  appareil = await obtenirCle();
+  $("appareil").textContent = appareil.id;
+  moduleCpp = await chargerCpp();
+  $("chiffrement").textContent = moduleCpp ? "🔐 marque C++ active" : "marque C++ inactive";
+
+  const flux = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false
+  });
+  video.srcObject = flux;
+  await video.play();
+  bouton.disabled = false;
+  etat.textContent = "Prêt. Appuie pour prendre une photo.";
+}
+
+demarrer().catch(e => etat.innerHTML = `<span class="ko-txt">Erreur : ${e.message}</span>`);
 </script>
 </body>
 </html>
